@@ -1,21 +1,81 @@
-# config.yaml
-model_list:
-  - model_name: gpt-4-turbo # This is your Azure "DEPLOYMENT-NAME"
-    litellm_params:
-      model: ollama/llama3 # The actual model served by Ollama
-      api_base: http://ollama:11434 # The internal Docker network address for Ollama
- 
-  - model_name: text-embedding-3-small # This is your Azure "DEPLOYMENT-NAME"
-    litellm_params:
-      model: ollama/all-minilm # The actual model served by Ollama
-      api_base: http://ollama:11434 # The internal Docker network address for Ollama
- 
-litellm_settings:
-  # Sets the proxy to mimic the Azure OpenAI API structure
-  api_version: "2025-09-01"
-  # Automatically remove unsupported parameters
-  drop_params: True
- 
-# Define a list of valid API keys for authentication
-keys:
-  - "my-secret-key"
+services:
+  final_project:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: final_project
+    depends_on:
+      - litellm
+      - neo4j-db
+    ports:
+      - "8501:8501"
+    networks:
+      - rag_net
+    restart: always
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag_net
+
+  model-puller:
+    image: alpine/curl:latest
+    container_name: model-puller
+    depends_on:
+      - ollama
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama to start...';
+        while ! curl -s http://ollama:11434 > /dev/null; do
+          sleep 1;
+        done;
+        echo 'Ollama is up! Pulling models...';
+        curl http://ollama:11434/api/pull -d '{ \"name\": \"llama3\" }';
+        curl http://ollama:11434/api/pull -d '{ \"name\": \"all-minilm\" }';
+        echo 'Model pulling complete.';
+      "
+    networks:
+      - rag_net
+    restart: on-failure
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    depends_on:
+      - ollama
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./config.yaml:/config.yaml
+    networks:
+      - rag_net
+    command: ["--config", "/config.yaml", "--port", "4000"]
+    restart: always
+
+  neo4j-db:
+    image: neo4j:5-community
+    container_name: neo4j-db
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=neo4j/gtghS3p2@25
+    networks:
+      - rag_net
+    restart: always
+
+# ✅ MUST be top-level
+volumes:
+  ollama_data:
+  neo4j_data:
+
+networks:
+  rag_net:
+    driver: bridge
